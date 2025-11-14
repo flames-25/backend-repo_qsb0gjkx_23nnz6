@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date, timedelta
 from typing import List, Optional, Literal, Dict, Any
 from uuid import uuid4
 
@@ -30,13 +30,16 @@ def objid(id_str: str) -> ObjectId:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
 
+# Ensure Asia/Jakarta timezone for logical dates/times
+import pytz
+WIB = pytz.timezone('Asia/Jakarta')
+
 def today_str() -> str:
-    # Use Asia/Jakarta logical date by offsetting to UTC+7 if needed; here we rely on container localtime.
-    return datetime.now().date().isoformat()
+    return datetime.now(WIB).date().isoformat()
 
 
 def now_time_str() -> str:
-    return datetime.now().strftime("%H:%M")
+    return datetime.now(WIB).strftime("%H:%M")
 
 
 def require_admin(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
@@ -241,7 +244,9 @@ def create_siswa(payload: SiswaIn, admin=Header(None, alias="Authorization")):
     kelas = db.kelas.find_one({"_id": objid(payload.id_kelas)})
     if not kelas:
         raise HTTPException(status_code=400, detail="Kelas tidak valid")
-    # Unique NIS
+    # Unique NIS with 5 chars validation
+    if len(payload.nis) != 5:
+        raise HTTPException(status_code=400, detail="NIS harus 5 karakter")
     if db.siswa.find_one({"nis": payload.nis}):
         raise HTTPException(status_code=400, detail="NIS sudah terdaftar")
     doc = {
@@ -290,7 +295,9 @@ def update_siswa(siswa_id: str, payload: SiswaIn, admin=Header(None, alias="Auth
     # validate kelas
     if not db.kelas.find_one({"_id": objid(payload.id_kelas)}):
         raise HTTPException(status_code=400, detail="Kelas tidak valid")
-    # unique NIS (exclude current)
+    # unique NIS (exclude current) and 5 chars validation
+    if len(payload.nis) != 5:
+        raise HTTPException(status_code=400, detail="NIS harus 5 karakter")
     if db.siswa.find_one({"nis": payload.nis, "_id": {"$ne": objid(siswa_id)}}):
         raise HTTPException(status_code=400, detail="NIS sudah terpakai oleh siswa lain")
     result = db.siswa.update_one(
@@ -325,6 +332,8 @@ def delete_siswa(siswa_id: str, admin=Header(None, alias="Authorization")):
 @app.post("/api/absen/checkin")
 def absen_checkin(payload: AbsenCheckIn):
     # find siswa by NIS
+    if len(payload.nis) != 5:
+        raise HTTPException(status_code=400, detail="NIS harus 5 karakter")
     siswa = db.siswa.find_one({"nis": payload.nis})
     if not siswa:
         raise HTTPException(status_code=404, detail="Siswa tidak ditemukan")
@@ -419,6 +428,8 @@ def stats_today():
 def set_status(payload: AbsenSetStatus, admin=Header(None, alias="Authorization")):
     require_admin(admin)
     # find siswa by NIS
+    if len(payload.nis) != 5:
+        raise HTTPException(status_code=400, detail="NIS harus 5 karakter")
     siswa = db.siswa.find_one({"nis": payload.nis})
     if not siswa:
         raise HTTPException(status_code=404, detail="Siswa tidak ditemukan")
@@ -452,10 +463,15 @@ def laporan_rekap(
 ):
     require_admin(admin)
     try:
-        start_d = datetime.fromisoformat(start).date()
-        end_d = datetime.fromisoformat(end).date()
+        start_d = datetime.now().fromisoformat(start).date()
+        end_d = datetime.now().fromisoformat(end).date()
     except Exception:
-        raise HTTPException(status_code=400, detail="Format tanggal tidak valid (YYYY-MM-DD)")
+        # Fallback
+        try:
+            start_d = datetime.strptime(start, "%Y-%m-%d").date()
+            end_d = datetime.strptime(end, "%Y-%m-%d").date()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Format tanggal tidak valid (YYYY-MM-DD)")
     if end_d < start_d:
         raise HTTPException(status_code=400, detail="Rentang tanggal tidak valid")
 
@@ -539,8 +555,8 @@ def laporan_rekap_csv(
 @app.post("/api/seed-demo")
 def seed_demo():
     """Idempotent: create sample classes and students if not present"""
-    # Classes
-    kelas_names = ["X-A", "X-B"]
+    # Classes prefilled for SMK
+    kelas_names = ["RPL", "TKJ", "AKL", "MP", "HTL", "TKR"]
     kelas_map: Dict[str, str] = {}
     for name in kelas_names:
         k = db.kelas.find_one({"nama_kelas": name})
@@ -550,12 +566,12 @@ def seed_demo():
         else:
             kelas_map[name] = str(k["_id"])
 
-    # Students
+    # Students demo (nis 5 digit)
     samples = [
-        ("1001", "Budi Santoso", kelas_map["X-A"]),
-        ("1002", "Siti Aminah", kelas_map["X-A"]),
-        ("2001", "Andi Wijaya", kelas_map["X-B"]),
-        ("2002", "Rina Marlina", kelas_map["X-B"]),
+        ("10001", "Budi Santoso", kelas_map["RPL"]),
+        ("10002", "Siti Aminah", kelas_map["RPL"]),
+        ("20001", "Andi Wijaya", kelas_map["TKJ"]),
+        ("20002", "Rina Marlina", kelas_map["TKJ"]),
     ]
     created = 0
     for nis, nama, kid in samples:
