@@ -1,48 +1,42 @@
 """
-Database Schemas
+Database Schemas for SIAS (Sistem Informasi Absensi Siswa)
 
-Define your MongoDB collection schemas here using Pydantic models.
-These schemas are used for data validation in your application.
+Each Pydantic model generally maps to a MongoDB collection using the
+lowercase class name as collection name.
 
-Each Pydantic model represents a collection in your database.
-Model name is converted to lowercase for the collection name:
-- User -> "user" collection
-- Product -> "product" collection
-- BlogPost -> "blogs" collection
+Collections:
+- Admin -> "admin"
+- Kelas -> "kelas"
+- Siswa -> "siswa"
+- Absensi -> "absensi"
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Literal
+from datetime import date, time
 
-# Example schemas (replace with your own):
 
-class User(BaseModel):
-    """
-    Users collection schema
-    Collection name: "user" (lowercase of class name)
-    """
-    name: str = Field(..., description="Full name")
-    email: str = Field(..., description="Email address")
-    address: str = Field(..., description="Address")
-    age: Optional[int] = Field(None, ge=0, le=120, description="Age in years")
-    is_active: bool = Field(True, description="Whether user is active")
+class Admin(BaseModel):
+    username: str = Field(..., description="Unique username")
+    password_hash: str = Field(..., description="BCrypt hash of password")
+    nama_lengkap: str = Field(..., description="Full name of admin")
 
-class Product(BaseModel):
-    """
-    Products collection schema
-    Collection name: "product" (lowercase of class name)
-    """
-    title: str = Field(..., description="Product title")
-    description: Optional[str] = Field(None, description="Product description")
-    price: float = Field(..., ge=0, description="Price in dollars")
-    category: str = Field(..., description="Product category")
-    in_stock: bool = Field(True, description="Whether product is in stock")
 
-# Add your own schemas here:
-# --------------------------------------------------
+class Kelas(BaseModel):
+    nama_kelas: str = Field(..., description='e.g., "X-A", "XII-IPA-1"')
 
-# Note: The Flames database viewer will automatically:
-# 1. Read these schemas from GET /schema endpoint
-# 2. Use them for document validation when creating/editing
-# 3. Handle all database operations (CRUD) directly
-# 4. You don't need to create any database endpoints!
+
+class Siswa(BaseModel):
+    nis: str = Field(..., description="Unique student ID")
+    nama_lengkap: str = Field(..., description="Student full name")
+    id_kelas: str = Field(..., description="Reference to kelas _id as string")
+
+
+StatusType = Literal['Hadir', 'Sakit', 'Izin', 'Alpha']
+
+
+class Absensi(BaseModel):
+    id_siswa: str = Field(..., description="Reference to siswa _id as string")
+    tanggal: date = Field(..., description="Attendance calendar date (YYYY-MM-DD)")
+    jam_masuk: Optional[str] = Field(None, description="HH:MM in local time")
+    status: Optional[StatusType] = Field(None, description="Attendance status for the day")
