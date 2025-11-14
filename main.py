@@ -1,7 +1,9 @@
 import os
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import List, Optional, Literal, Dict, Any
-from fastapi import FastAPI, HTTPException, Query
+from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException, Query, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from bson import ObjectId
@@ -29,7 +31,29 @@ def objid(id_str: str) -> ObjectId:
 
 
 def today_str() -> str:
+    # Use Asia/Jakarta logical date by offsetting to UTC+7 if needed; here we rely on container localtime.
     return datetime.now().date().isoformat()
+
+
+def now_time_str() -> str:
+    return datetime.now().strftime("%H:%M")
+
+
+def require_admin(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token = authorization.split(" ", 1)[1].strip()
+    sess = db.admin_sessions.find_one({"token": token})
+    if not sess:
+        raise HTTPException(status_code=401, detail="Session invalid")
+    # optional: expiry check
+    if sess.get("expires_at") and datetime.utcnow() > sess["expires_at"]:
+        db.admin_sessions.delete_one({"_id": sess["_id"]})
+        raise HTTPException(status_code=401, detail="Session expired")
+    admin = db.admin.find_one({"_id": objid(sess["admin_id"])})
+    if not admin:
+        raise HTTPException(status_code=401, detail="Admin not found")
+    return {"admin": admin, "token": token}
 
 
 # Pydantic models for requests/responses
@@ -65,9 +89,20 @@ class AbsenCheckIn(BaseModel):
 
 class AbsenSetStatus(BaseModel):
     nis: str
-    tanggal: Optional[str] = Field(default_factory=today_str)
+    tanggal: Optional[str] = Field(default_factory= today_str)
     status: StatusType
     jam_masuk: Optional[str] = None
+
+
+class AdminLoginIn(BaseModel):
+    username: str
+    password: str
+
+
+class AdminLoginOut(BaseModel):
+    token: str
+    username: str
+    nama_lengkap: Optional[str] = None
 
 
 # Root & health
@@ -111,9 +146,55 @@ def test_database():
     return response
 
 
+# ========== ADMIN AUTH ==========
+from passlib.hash import bcrypt
+
+@app.post("/api/admin/seed-default")
+def seed_default_admin():
+    """Create default admin if not exists: username=admin, password=admin123"""
+    existing = db.admin.find_one({"username": "admin"})
+    if existing:
+        return {"status": "ok", "message": "Admin already exists"}
+    pw_hash = bcrypt.hash("admin123")
+    db.admin.insert_one({
+        "username": "admin",
+        "password_hash": pw_hash,
+        "nama_lengkap": "Administrator",
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+    })
+    return {"status": "ok", "message": "Default admin created", "username": "admin", "password": "admin123"}
+
+
+@app.post("/api/admin/login", response_model=AdminLoginOut)
+def admin_login(payload: AdminLoginIn):
+    admin = db.admin.find_one({"username": payload.username})
+    if not admin:
+        raise HTTPException(status_code=401, detail="Username atau password salah")
+    if not bcrypt.verify(payload.password, admin.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Username atau password salah")
+    token = uuid4().hex
+    db.admin_sessions.insert_one({
+        "admin_id": str(admin["_id"]),
+        "token": token,
+        "created_at": datetime.utcnow(),
+        "expires_at": datetime.utcnow() + timedelta(hours=12),
+    })
+    return {"token": token, "username": admin.get("username"), "nama_lengkap": admin.get("nama_lengkap")}
+
+
+@app.post("/api/admin/logout")
+def admin_logout(authorization: Optional[str] = Header(None)):
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        db.admin_sessions.delete_many({"token": token})
+    return {"status": "ok"}
+
+
 # ========== KELAS CRUD ==========
 @app.post("/api/kelas", response_model=KelasOut)
-def create_kelas(payload: KelasIn):
+def create_kelas(payload: KelasIn, admin=Header(None, alias="Authorization")):
+    require_admin(admin)
     existing = db.kelas.find_one({"nama_kelas": payload.nama_kelas})
     if existing:
         raise HTTPException(status_code=400, detail="Nama kelas sudah ada")
@@ -130,7 +211,8 @@ def list_kelas():
 
 
 @app.put("/api/kelas/{kelas_id}", response_model=KelasOut)
-def update_kelas(kelas_id: str, payload: KelasIn):
+def update_kelas(kelas_id: str, payload: KelasIn, admin=Header(None, alias="Authorization")):
+    require_admin(admin)
     result = db.kelas.update_one({"_id": objid(kelas_id)}, {"$set": {"nama_kelas": payload.nama_kelas, "updated_at": datetime.utcnow()}})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Kelas tidak ditemukan")
@@ -139,7 +221,8 @@ def update_kelas(kelas_id: str, payload: KelasIn):
 
 
 @app.delete("/api/kelas/{kelas_id}")
-def delete_kelas(kelas_id: str):
+def delete_kelas(kelas_id: str, admin=Header(None, alias="Authorization")):
+    require_admin(admin)
     # Prevent delete if referenced by siswa
     ref = db.siswa.find_one({"id_kelas": str(objid(kelas_id))})
     if ref:
@@ -152,7 +235,8 @@ def delete_kelas(kelas_id: str):
 
 # ========== SISWA CRUD ==========
 @app.post("/api/siswa", response_model=SiswaOut)
-def create_siswa(payload: SiswaIn):
+def create_siswa(payload: SiswaIn, admin=Header(None, alias="Authorization")):
+    require_admin(admin)
     # Validate kelas exists
     kelas = db.kelas.find_one({"_id": objid(payload.id_kelas)})
     if not kelas:
@@ -201,7 +285,8 @@ def list_siswa(id_kelas: Optional[str] = None, q: Optional[str] = None):
 
 
 @app.put("/api/siswa/{siswa_id}", response_model=SiswaOut)
-def update_siswa(siswa_id: str, payload: SiswaIn):
+def update_siswa(siswa_id: str, payload: SiswaIn, admin=Header(None, alias="Authorization")):
+    require_admin(admin)
     # validate kelas
     if not db.kelas.find_one({"_id": objid(payload.id_kelas)}):
         raise HTTPException(status_code=400, detail="Kelas tidak valid")
@@ -226,7 +311,8 @@ def update_siswa(siswa_id: str, payload: SiswaIn):
 
 
 @app.delete("/api/siswa/{siswa_id}")
-def delete_siswa(siswa_id: str):
+def delete_siswa(siswa_id: str, admin=Header(None, alias="Authorization")):
+    require_admin(admin)
     # Also delete absensi records for this siswa
     db.absensi.delete_many({"id_siswa": siswa_id})
     result = db.siswa.delete_one({"_id": objid(siswa_id)})
@@ -257,7 +343,7 @@ def absen_checkin(payload: AbsenCheckIn):
             "jam_masuk": existing.get("jam_masuk"),
         }
 
-    now_time = datetime.now().strftime("%H:%M")
+    now_time = now_time_str()
     doc = {
         "id_siswa": id_siswa,
         "tanggal": tanggal,
@@ -330,7 +416,8 @@ def stats_today():
 
 
 @app.put("/api/absen/status")
-def set_status(payload: AbsenSetStatus):
+def set_status(payload: AbsenSetStatus, admin=Header(None, alias="Authorization")):
+    require_admin(admin)
     # find siswa by NIS
     siswa = db.siswa.find_one({"nis": payload.nis})
     if not siswa:
@@ -346,7 +433,7 @@ def set_status(payload: AbsenSetStatus):
         "status": payload.status,
     }
     if payload.status == "Hadir":
-        update_doc["jam_masuk"] = payload.jam_masuk or datetime.now().strftime("%H:%M")
+        update_doc["jam_masuk"] = payload.jam_masuk or now_time_str()
     elif payload.jam_masuk is not None:
         update_doc["jam_masuk"] = payload.jam_masuk
 
@@ -354,13 +441,16 @@ def set_status(payload: AbsenSetStatus):
     return {"message": "Status tersimpan", "nis": payload.nis, "tanggal": tanggal, "status": payload.status}
 
 
+# ========== LAPORAN ==========
 @app.get("/api/laporan/rekap")
 def laporan_rekap(
     start: str = Query(..., description="YYYY-MM-DD"),
     end: str = Query(..., description="YYYY-MM-DD"),
     id_kelas: Optional[str] = None,
     nis: Optional[str] = None,
+    admin=Header(None, alias="Authorization")
 ):
+    require_admin(admin)
     try:
         start_d = datetime.fromisoformat(start).date()
         end_d = datetime.fromisoformat(end).date()
@@ -424,6 +514,61 @@ def laporan_rekap(
         summary[sid]["Alpha"] = max(0, len(all_dates) - days_recorded)
 
     return {"range": {"start": start, "end": end}, "data": list(summary.values())}
+
+
+@app.get("/api/laporan/rekap/csv")
+def laporan_rekap_csv(
+    start: str = Query(..., description="YYYY-MM-DD"),
+    end: str = Query(..., description="YYYY-MM-DD"),
+    id_kelas: Optional[str] = None,
+    nis: Optional[str] = None,
+    admin=Header(None, alias="Authorization")
+):
+    # Reuse the JSON computation then format CSV
+    json_data = laporan_rekap(start=start, end=end, id_kelas=id_kelas, nis=nis, admin=admin)
+    rows = json_data["data"]
+    lines = ["NIS,Nama,Kelas,Hadir,Sakit,Izin,Alpha"]
+    for r in rows:
+        line = f"{r['nis']},{r['nama']},{r['kelas']},{r['Hadir']},{r['Sakit']},{r['Izin']},{r['Alpha']}"
+        lines.append(line)
+    csv_text = "\n".join(lines)
+    return Response(content=csv_text, media_type="text/csv")
+
+
+# ========== DEMO SEED ==========
+@app.post("/api/seed-demo")
+def seed_demo():
+    """Idempotent: create sample classes and students if not present"""
+    # Classes
+    kelas_names = ["X-A", "X-B"]
+    kelas_map: Dict[str, str] = {}
+    for name in kelas_names:
+        k = db.kelas.find_one({"nama_kelas": name})
+        if not k:
+            res = db.kelas.insert_one({"nama_kelas": name, "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()})
+            kelas_map[name] = str(res.inserted_id)
+        else:
+            kelas_map[name] = str(k["_id"])
+
+    # Students
+    samples = [
+        ("1001", "Budi Santoso", kelas_map["X-A"]),
+        ("1002", "Siti Aminah", kelas_map["X-A"]),
+        ("2001", "Andi Wijaya", kelas_map["X-B"]),
+        ("2002", "Rina Marlina", kelas_map["X-B"]),
+    ]
+    created = 0
+    for nis, nama, kid in samples:
+        if not db.siswa.find_one({"nis": nis}):
+            db.siswa.insert_one({
+                "nis": nis,
+                "nama_lengkap": nama,
+                "id_kelas": kid,
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+            })
+            created += 1
+    return {"status": "ok", "kelas": list(kelas_map.items()), "siswa_baru": created}
 
 
 if __name__ == "__main__":
