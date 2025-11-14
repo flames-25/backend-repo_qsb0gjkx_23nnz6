@@ -1,6 +1,19 @@
 INFO:     Will watch for changes in these directories: ['/home/workspace']
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [303] using StatReload
-INFO:     Started server process [305]
+INFO:     Started reloader process [348] using StatReload
+INFO:     Started server process [350]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
+INFO:     172.20.0.1:52770 - "HEAD / HTTP/1.1" 405 Method Not Allowed
+INFO:     172.20.0.1:52788 - "GET /api/kelas HTTP/1.1" 200 OK
+INFO:     172.20.0.1:52774 - "GET /api/stats/today HTTP/1.1" 200 OK
+INFO:     172.20.0.1:52788 - "GET /api/kelas HTTP/1.1" 200 OK
+INFO:     172.20.0.1:52774 - "GET /api/stats/today HTTP/1.1" 200 OK
+INFO:     172.20.0.1:52796 - "GET /api/status/today HTTP/1.1" 200 OK
+INFO:     172.20.0.1:52796 - "GET /api/status/today HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42718 - "GET /api/kelas HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42704 - "GET /api/stats/today HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42720 - "GET /api/status/today HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42718 - "GET /api/kelas HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42704 - "GET /api/stats/today HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42720 - "GET /api/status/today HTTP/1.1" 200 OK
